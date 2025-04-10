@@ -1,0 +1,440 @@
+import logging
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+    ConversationHandler,
+)
+
+# Настройки (ЗАМЕНИТЕ НА СВОИ!)
+import os
+TOKEN = os.environ.get('TOKEN')
+WAREHOUSE_CHAT_ID = -1002322687297  # ID чата склада
+
+# Состояния диалога
+SELECT_DEPARTMENT, INPUT_QUANTITY, INPUT_UNIT, CONFIRM_ORDER = range(4)
+
+# Кнопки навигации
+BACK_BUTTON = "◀ Назад"
+CHANGE_DEPARTMENT_BUTTON = "🔁 Сменить отдел"
+NEW_ORDER_BUTTON = "🔄 Новый заказ"
+CANCEL_BUTTON = "❌ Отменить"
+SKIP_BUTTON = "⏭ Пропустить ингредиент"
+
+# Отделы и их ингредиенты (сокращенный вариант)
+departments = {
+    "Роллы": [
+        "Сыр для роллов", "Бекон", "Лосось чернуха", "Копченая курица",
+        "Лосось фила", "Лосось шняга", "Масляная рыба", "Угорь", "Тунец",
+        "Кларий", "Креветки блок", "Краб", "Чука",
+        "Соус кунжутный", "Масаго оранж", "Масаго малин", "Унаги соус",
+        "Майонез", "Кимчи", "Сухари", "Мука темпура", "Крахмал",
+        "Шиитакэ", "Такуан", "Огурец", "Авокадо",
+        "Японское тесто", "Пакет рулон", "Циновка", 
+        "Контейнер фольгир", "Ланч бокс м/б", "Контейнер м/б",
+        "Контейнер стол м/б", "Пленка пищевая", "Полотенце бумаж",
+        "Фольга", "Пакет мус (м,б)",
+        "Кунжут бел/черн", "Масло фритюр", "Рис", "Нори",
+        "Стружка тунца", "Мицукан",
+        "Перчатки целоф м,l", "Перчатки винил"
+    ],
+    "Пицца": [
+        "Гауда", "Дор-блю", "Пармезан", "Моцарелла",
+        "Ветчина", "Салями", "Копченая курица", "Окорок свиной",
+        "Грудинка свиная", "Пепперони", "Говядина вареная",
+        "Куриное филе фахито", "Куриное филе барбекю",
+        "Морской коктейль", "Креветки коктейльные", "Мидии", "Кальмар",
+        "Ананас", "Маслины", "Оливки", "Шампиньоны", "Огурцы соленые",
+        "Соус красный", "Майонез", "Соус бургер", "Соус цезарь", 
+        "Соус барбекю", "Соус ранч", "Соус кисло-сладкий",
+        "Мука для пиццы", "Мука крупка", "Дрожжи", "Специи фахито",
+        "Коробка для пиццы 26см", "Коробка для пиццы 33см", "Коробка для пиццы 40см",
+        "Пакет для пиццы малый", "Пакет для пиццы большой", "Пергамент",
+        "Перчатки целофановые M", "Перчатки целофановые L",
+        "Пакеты мусорные малые", "Пакеты мусорные большие"
+    ],
+    "Горячий цех": [
+        "Байтсы", "Кольца кальмара", "Наггетсы", "Картофель фри", 
+        "Луковые кольца", "Фасоль стручковая", "Перец болгарский",
+        "Удон", "Соба", "Рамен", "Фунчоза",
+        "Сироп", "Топпинг", "Концентрат куриный", "Концентрат рыбный",
+        "Перец черный молотый", "Соус кисло-сладкий", "Соус терияки",
+        "Шрирача", "Соус кунжутный", "Вакаме", "Том ям", 
+        "Кокосовое молоко", "Падам чистый", "Подсолнечное масло", "Масло фритюрное",
+        "Молоко", "Булочки белые", "Булочки черные", "Мороженое пломбир",
+        "Панировочные сухари", "Мука темпура", "Крахмал",
+        "Коробка для вок", "Супница", "Контейнер боулы", 
+        "Контейнер боксы", "Коробка для фри малая", 
+        "Коробка для фри большая", "Соусник 50мл", "Соусник 80мл",
+        "Стаканы коктейльные 0.3л", "Стаканы коктейльные 0.5л",
+        "Крышки для коктейлей", "Креманка для мороженого",
+        "Средство для посуды", "Антижир", 
+        "Пакеты мусорные малые", "Пакеты мусорные большие",
+        "Тряпки", "Губки", "Терки", "Тряпка для пола",
+        "Перчатки целофановые M", "Перчатки целофановые L",
+        "Перчатки виниловые", "Пленка пищевая", "Фольга"
+    ],
+    "Касса": [
+        "Соус чесночный 25мл", "Соус сырный 25мл", "Соус кетчуп 25мл", 
+        "Соус барбекю 25мл", "Соус кисло-сладкий 25мл",
+        "Вода 5л", "Вода 20л",
+        "Чай черный", "Чай зеленый", "Чай фруктовый",
+        "Кола 0.3л", "Кола 0.5л", "Кола 1л", "Кола 2л",
+        "Фанта 0.3л", "Фанта 0.5л",
+        "Спрайт 0.3л", "Спрайт 0.5л",
+        "Вода газ.", "Вода не газ.",
+        "Сок 0.33л (апельсин)", "Сок 0.33л (мультифрукт)", "Сок 0.33л (яблоко)",
+        "Сок 1л (апельсин)", "Сок 1л (мультифрукт)", "Сок 1л (яблоко)",
+        "Кофе", "Сироп", "Молоко",
+        "Сахар порц.", "Соль порц.", "Перец порц.", "Васаби", "Имбирь",
+        "Соевый соус коробка",
+        "Вилка", "Нож", "Ложка м.", "Ложка б.", "Зубочистка",
+        "Палочки для размешивания", "Палочки для суши",
+        "Стакан для кофе 0.2л", "Стакан для кофе 0.3л",
+        "Крышка кофе 0.2л", "Крышка кофе 0.35л", "Крышка фольгированная",
+        "Трубочки коктейльные", "Соусник 30мл", "Соусник 50мл", "Соусник 80мл",
+        "Тарелка", "Креманка для мороженого",
+        "Пакет для пиццы м.", "Пакет для пиццы б.",
+        "Пакет для закусок м.", "Пакет для закусок б.",
+        "Пакет майка", "Коробка для вок", "Супница",
+        "Контейнер боулы", "Контейнер боксы",
+        "Стаканы кокт. 0.3л", "Стаканы кокт. 0.5л",
+        "Крышки для коктейлей", "Держатели стаканов (2 места)", 
+        "Держатели стаканов (4 места)", "Буклет",
+        "Пергамент", "Фольга",
+        "Кассовая лента м.", "Кассовая лента б.",
+        "Лента для пистолета", "Сменные кассеты", "Сейф-пакеты",
+        "Салфетки", "Тряпки", "Губки", "Терки",
+        "Тряпка для пола", "Средство для посуды", "Антижир",
+        "Пакет мусорный м.", "Пакет мусорный б.",
+        "Перчатки целофановые м.", "Перчатки целофановые l",
+        "Перчатки виниловые", "Полотенце бумажное"
+    ],
+    "Уборка": [
+        "Моющее средство", "Губки", "Перчатки", "Тряпки", "Мешки для мусора", "Салфетки"
+    ]
+}
+
+units = ["шт", "упак", "кг", "л"]
+
+# Хранение сессий
+user_sessions = {}
+
+# Настройка логгирования
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка команды /start"""
+    user_id = update.message.from_user.id
+    user_sessions[user_id] = {
+        "username": update.message.from_user.username,
+        "department": None,
+        "items": [],
+        "order": {},
+        "all_items": {},
+        "current_item_index": 0
+    }
+    return await select_department(update, context)
+
+async def select_department(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Выбор отдела"""
+    user_id = update.message.from_user.id
+    
+    if update.message.text in ('/start', NEW_ORDER_BUTTON, CHANGE_DEPARTMENT_BUTTON):
+        user_sessions[user_id] = {
+            "username": update.message.from_user.username,
+            "department": None,
+            "items": [],
+            "order": {},
+            "all_items": {},
+            "current_item_index": 0
+        }
+        
+        keyboard = [[dept] for dept in departments.keys()]
+        await update.message.reply_text(
+            "Выберите отдел:",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard, one_time_keyboard=True, resize_keyboard=True
+            ),
+        )
+        return SELECT_DEPARTMENT
+
+    department = update.message.text
+    if department not in departments:
+        await update.message.reply_text("Выберите отдел из списка:")
+        return SELECT_DEPARTMENT
+
+    user_sessions[user_id].update({
+        "department": department,
+        "items": departments[department],
+        "all_items": {item: "0шт" for item in departments[department]},
+        "current_item_index": 0
+    })
+
+    await ask_for_quantity(update, context)
+    return INPUT_QUANTITY
+
+async def ask_for_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Запрос количества с кнопкой пропуска"""
+    user_id = update.message.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        await update.message.reply_text("Сессия устарела. Начните заново /start")
+        return ConversationHandler.END
+
+    item = session["items"][session["current_item_index"]]
+    
+    keyboard = [
+        [SKIP_BUTTON],
+        [BACK_BUTTON] if session["current_item_index"] > 0 else [],
+        [CHANGE_DEPARTMENT_BUTTON, CANCEL_BUTTON]
+    ]
+    
+    await update.message.reply_text(
+        f"Введите количество для {item}:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard, one_time_keyboard=True, resize_keyboard=True
+        ),
+    )
+
+async def handle_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка введенного количества"""
+    user_id = update.message.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        await update.message.reply_text("Сессия устарела. Начните заново /start")
+        return ConversationHandler.END
+
+    # Обработка кнопки пропуска
+    if update.message.text == SKIP_BUTTON:
+        return await skip_ingredient(update, context)
+    
+    # Обработка других кнопок
+    if update.message.text == BACK_BUTTON:
+        return await go_back(update, context)
+    elif update.message.text == CHANGE_DEPARTMENT_BUTTON:
+        return await select_department(update, context)
+    elif update.message.text == CANCEL_BUTTON:
+        return await cancel(update, context)
+
+    # Проверка ввода количества
+    try:
+        quantity = float(update.message.text)
+        if quantity < 0:
+            await update.message.reply_text("Введите положительное число:")
+            return INPUT_QUANTITY
+    except ValueError:
+        await update.message.reply_text("Введите число:")
+        return INPUT_QUANTITY
+
+    item = session["items"][session["current_item_index"]]
+    session["current_quantity"] = quantity
+    session["current_item"] = item
+
+    if quantity == 0:
+        return await skip_ingredient(update, context)
+    else:
+        keyboard = [[unit] for unit in units]
+        keyboard.append([BACK_BUTTON])
+        await update.message.reply_text(
+            f"Выберите единицу для {item}:",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard, one_time_keyboard=True, resize_keyboard=True
+            ),
+        )
+        return INPUT_UNIT
+
+async def skip_ingredient(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Пропуск текущего ингредиента"""
+    user_id = update.message.from_user.id
+    session = user_sessions.get(user_id)
+    
+    item = session["items"][session["current_item_index"]]
+    session["all_items"][item] = "0шт"
+    session["current_item_index"] += 1
+    
+    if session["current_item_index"] < len(session["items"]):
+        await ask_for_quantity(update, context)
+        return INPUT_QUANTITY
+    else:
+        return await confirm_order(update, context)
+
+async def handle_unit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка выбора единицы измерения"""
+    user_id = update.message.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        await update.message.reply_text("Сессия устарела. Начните заново /start")
+        return ConversationHandler.END
+
+    if update.message.text == BACK_BUTTON:
+        return await go_back(update, context)
+    elif update.message.text == SKIP_BUTTON:
+        return await skip_ingredient(update, context)
+
+    if update.message.text not in units:
+        await update.message.reply_text("Выберите единицу из списка:")
+        return INPUT_UNIT
+
+    item = session["current_item"]
+    quantity = session["current_quantity"]
+    unit = update.message.text
+    
+    session["all_items"][item] = f"{quantity}{unit}"
+    if quantity > 0:
+        session["order"][item] = f"{quantity}{unit}"
+
+    session["current_item_index"] += 1
+    if session["current_item_index"] < len(session["items"]):
+        await ask_for_quantity(update, context)
+        return INPUT_QUANTITY
+    else:
+        return await confirm_order(update, context)
+
+async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Возврат на шаг назад"""
+    user_id = update.message.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        await update.message.reply_text("Сессия устарела. Начните заново /start")
+        return ConversationHandler.END
+
+    if session["current_item_index"] > 0:
+        session["current_item_index"] -= 1
+        await ask_for_quantity(update, context)
+        return INPUT_QUANTITY
+    else:
+        return await select_department(update, context)
+
+async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Подтверждение заказа"""
+    user_id = update.message.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        await update.message.reply_text("Сессия устарела. Начните заново /start")
+        return ConversationHandler.END
+
+    order_lines = [
+        f"• {item}: {qty}" 
+        for item, qty in session["all_items"].items() 
+        if not qty.startswith("0")
+    ]
+    
+    order_text = (
+        f"📦 Заявка от отдела {session['department']}:\n\n" +
+        ("\n".join(order_lines) if order_lines else "Нет выбранных позиций") +
+        f"\n\nОтправил: @{session['username']}"
+    )
+    
+    session["order_text"] = order_text
+    
+    keyboard = [
+        ["✅ Отправить", "❌ Отменить"],
+        [CHANGE_DEPARTMENT_BUTTON, NEW_ORDER_BUTTON]
+    ]
+    
+    await update.message.reply_text(
+        f"Ваш заказ:\n\n{order_text}\n\nПодтверждаете?",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard, one_time_keyboard=True, resize_keyboard=True
+        ),
+    )
+    return CONFIRM_ORDER
+
+async def send_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Отправка заказа на склад"""
+    user_id = update.message.from_user.id
+    session = user_sessions.get(user_id)
+    
+    if not session:
+        await update.message.reply_text("Сессия устарела. Начните заново /start")
+        return ConversationHandler.END
+
+    if update.message.text == "✅ Отправить":
+        try:
+            await context.bot.send_message(
+                chat_id=-1002322687297,
+                text=session["order_text"]
+            )
+            await update.message.reply_text(
+                "✅ Заявка отправлена на склад!",
+                reply_markup=ReplyKeyboardMarkup(
+                    [[NEW_ORDER_BUTTON]], resize_keyboard=True
+                )
+            )
+        except Exception as e:
+            logger.error(f"Ошибка отправки: {e}")
+            await update.message.reply_text("❌ Ошибка отправки. Попробуйте позже.")
+        return ConversationHandler.END
+        
+    elif update.message.text == NEW_ORDER_BUTTON:
+        return await select_department(update, context)
+        
+    elif update.message.text == CHANGE_DEPARTMENT_BUTTON:
+        return await select_department(update, context)
+        
+    else:
+        return await cancel(update, context)
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Отмена заказа"""
+    user_id = update.message.from_user.id
+    user_sessions.pop(user_id, None)
+    
+    await update.message.reply_text(
+        "Заказ отменен. Чтобы начать заново, нажмите /start",
+        reply_markup=ReplyKeyboardMarkup([["/start"]], resize_keyboard=True)
+    )
+    return ConversationHandler.END
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Глобальный обработчик ошибок"""
+    logger.error(msg="Ошибка в боте:", exc_info=context.error)
+    
+    if update and update.message:
+        await update.message.reply_text(
+            "⚠️ Произошла ошибка. Пожалуйста, начните заново /start"
+        )
+
+def main() -> None:
+    """Запуск бота"""
+    application = Application.builder().token(TOKEN).build()
+
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            SELECT_DEPARTMENT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, select_department)
+            ],
+            INPUT_QUANTITY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_quantity)
+            ],
+            INPUT_UNIT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_unit)
+            ],
+            CONFIRM_ORDER: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, send_order)
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    application.add_handler(conv_handler)
+    application.add_error_handler(error_handler)
+
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == "__main__":
+    main()
